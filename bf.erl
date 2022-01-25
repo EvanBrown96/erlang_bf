@@ -10,22 +10,42 @@
 interpreter( CellSize, MemorySize, Input, Output ) ->
     {interpreter, CellSize, MemorySize, Input, Output}.
 
+%% run given brainfuck program (as string)
+%% Interpreter - parameters to use in run (memory info, io streams)
+%% TextProgram - brainfuck program as a string
 run( Interpreter, TextProgram ) ->
-    step(Interpreter, new_program(TextProgram), startState(Interpreter)).
+    run(Interpreter, new_program(TextProgram), start_state(Interpreter)).
 
-startState( { interpreter, CellSize, _, _, _} ) ->
+run( _, { bf_prog, fin, _, _ }, State ) ->
+    State;
+run( Interpreter, Program, State ) ->
+    { UpdatedProgram, UpdatedState } = step(Interpreter, Program, State),
+    run(Interpreter, UpdatedProgram, UpdatedState).
+
+%% get default initial state to run a program over
+%% ie. empty memory, pointer at cell 0
+%% Interpreter - initialize memory using interpreter memory parameters
+start_state( { interpreter, CellSize, _, _, _} ) ->
     { bf_state, [], <<0:CellSize>>, [] }.
 
+%% convert a string program into a Program representation
+%% Program - the program to use
 new_program( [First | Rest] ) ->
     { bf_prog, [First], Rest, []}.
 
+%% move program to next command
+%% Program - the program to advance by one command
 advance_program( { bf_prog, [Command], [], Executed } ) ->
     { bf_prog, fin, [], [Command | Executed] };
 advance_program( { bf_prog, [Command], [Next | Todo], Executed } ) ->
     { bf_prog, [Next], Todo, [Command | Executed] }.
 
-jump_forward( Program ) ->
+%% when encountered an open bracket with break condition met
+%% advance program to after the corresponding close bracket
+%% Program - the program to jump in
+jump_forward( Program = { bf_prog, "[", _, _ } ) ->
     jump_forward( 1, advance_program(Program) ).
+
 jump_forward( 0, Program ) ->
     Program;
 jump_forward( Count, Program = { bf_prog, "]", _, _ } ) ->
@@ -35,11 +55,17 @@ jump_forward( Count, Program = { bf_prog, "[", _, _ } ) ->
 jump_forward( Count, Program ) ->
     jump_forward( Count, advance_program(Program) ).
 
+%% move program back one command
+%% Program - the program to move back in
 undo_program( { bf_prog, [Command], Todo, [Prev | Executed] } ) ->
     { bf_prog, [Prev], [Command | Todo], Executed }.
 
+%% when encountered a closed bracket with loop condition met
+%% move program back to directly after the corresponding open bracket
+%% Program - the program to jump in
 jump_backward( Program ) ->
     jump_backward( 1, undo_program(Program) ).
+
 jump_backward( 0, Program ) ->
     advance_program(advance_program(Program));
 jump_backward( Count, Program = { bf_prog, "]", _, _ } ) ->
@@ -49,10 +75,13 @@ jump_backward( Count, Program = { bf_prog, "[", _, _ } ) ->
 jump_backward( Count, Program ) ->
     jump_backward( Count, undo_program(Program) ).
 
-step( _, { bf_prog, fin, _, _ }, State ) ->
-    State;
 
-step( Interpreter = { interpreter, CellSize, MemorySize, _, _ }
+%% perform logic of updating program representation and program state
+%% based on the current command
+step( _, Program = { bf_prog, fin, _, _ }, State ) ->
+    { Program, State };
+
+step( _Interpreter = { interpreter, CellSize, MemorySize, _, _ }
     , Program = { bf_prog, ">", _, _ }
     , _State = { bf_state, PrevMem, CellValue, NextMem }
 ) ->
@@ -65,9 +94,9 @@ step( Interpreter = { interpreter, CellSize, MemorySize, _, _ }
             end;
         Other -> Other
     end,
-    step(Interpreter, advance_program(Program), { bf_state, [CellValue | PrevMem], NewCell, UpdatedMem });
+    { advance_program(Program), { bf_state, [CellValue | PrevMem], NewCell, UpdatedMem } };
 
-step( Interpreter = { interpreter, _, _, _, _ }
+step( _
     , Program = { bf_prog, "<", _, _ }
     , _State = { bf_state, PrevMem, CellValue, NextMem }
 ) ->        
@@ -76,48 +105,50 @@ step( Interpreter = { interpreter, _, _, _, _ }
             erlang:exit(memory_exceeded);
         Other -> Other
     end,
-    step(Interpreter, advance_program(Program), { bf_state, UpdatedMem, NewCell, [ CellValue | NextMem ]});
+    { advance_program(Program), { bf_state, UpdatedMem, NewCell, [ CellValue | NextMem ] } };
 
-step( Interpreter = {interpreter, _, _, _, _ }
+step( _Interpreter = { interpreter, CellSize, _, _, _ }
     , Program = { bf_prog, "+", _, _ }
-    , _State = { bf_state, PrevMem, <<CellInt>>, NextMem }
+    , _State = { bf_state, PrevMem, CellValue, NextMem }
 ) ->
-    step(Interpreter, advance_program(Program), { bf_state, PrevMem, <<(CellInt + 1)>>, NextMem });
+    <<CellInt:CellSize>> = CellValue,
+    { advance_program(Program), { bf_state, PrevMem, <<(CellInt + 1):CellSize>>, NextMem } };
 
-step( Interpreter = {interpreter, _, _, _, _ }
+step( _Interpreter = { interpreter, CellSize, _, _, _ }
     , Program = { bf_prog, "-", _, _ }
-    , _State = { bf_state, PrevMem, <<CellInt>>, NextMem }
+    , _State = { bf_state, PrevMem, CellValue, NextMem }
 ) ->
-    step(Interpreter, advance_program(Program), { bf_state, PrevMem, <<(CellInt - 1)>>, NextMem });
+    <<CellInt:CellSize>> = CellValue,
+    { advance_program(Program), { bf_state, PrevMem, <<(CellInt - 1):CellSize>>, NextMem } };
 
-step( Interpreter
+step( _
     , Program = { bf_prog, "[", _, _ }
     , State = { bf_state, _, <<CellInt>>, _ }
 ) ->
     case CellInt of
-        0 -> step(Interpreter, jump_forward(Program), State);
-        _ -> step(Interpreter, advance_program(Program), State)
+        0 -> { jump_forward(Program), State };
+        _ -> { advance_program(Program), State }
     end;
 
-step( Interpreter
+step( _
     , Program = { bf_prog, "]", _, _ }
     , State = { bf_state, _, <<CellInt>>, _ }
 ) ->
     case CellInt of
-        0 -> step(Interpreter, advance_program(Program), State);
-        _ -> step(Interpreter, jump_backward(Program), State)
+        0 -> { advance_program(Program), State };
+        _ -> { jump_backward(Program), State }
     end;
 
-step( Interpreter = {interpreter, _, _, Input, _ }
+step( _Interpreter = {interpreter, _, _, Input, _ }
     , Program = { bf_prog, ",", _, _ }
     , _State = { bf_state, PrevMem, _, NextMem }
 ) ->
     InputChar = io:get_chars(Input, "", 1),
-    step(Interpreter, advance_program(Program), { bf_state, PrevMem, erlang:list_to_binary(InputChar), NextMem });
+    { advance_program(Program), { bf_state, PrevMem, erlang:list_to_binary(InputChar), NextMem } };
 
-step( Interpreter = {interpreter, _, _, _, Output }
+step( _Interpreter = {interpreter, _, _, _, Output }
     , Program = { bf_prog, ".", _, _ }
     , State = { bf_state, _, CellValue, _ }
 ) ->
     io:write(Output, erlang:binary_to_atom(CellValue, latin1)),
-    step(Interpreter, advance_program(Program), State).
+    { advance_program(Program), State }.
