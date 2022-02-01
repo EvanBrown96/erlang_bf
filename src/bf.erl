@@ -1,5 +1,5 @@
 -module(bf).
--export([interpreter/4, run/2]).
+-export([interpreter/2, shell_run/2, step/2, default_state/2]).
 -include("../include/bf_records.hrl").
 
 %% create an interpreter with the given parameters
@@ -7,33 +7,54 @@
 %% MemorySize - integer or 'unlimited', number of cells available in memory
 %% Input - function/0 which returns a single character
 %% Output - function/1 which takes a single character
-interpreter( CellSize, MemorySize, Input, Output ) ->
+interpreter( CellSize, MemorySize ) ->
     #interpreter{ cell_size = CellSize
                 , memory    = MemorySize
-                , input     = Input
-                , output    = Output 
                 }.
 
 %% run given brainfuck program (as string)
 %% Interpreter - parameters to use in run (memory info, io streams)
 %% TextProgram - brainfuck program as a string
-run( Interpreter, TextProgram ) ->
-    run(Interpreter, new_program(TextProgram), start_state(Interpreter)).
+shell_run( Interpreter, TextProgram ) ->
+    run(Interpreter, default_state(Interpreter, TextProgram)).
 
-run( _, #bf_prog{ command = fin }, State ) ->
+run( _, State = #bf_state{ status = done } ) ->
     State;
-run( Interpreter, Program, State ) ->
-    { UpdatedProgram, UpdatedState } = step(Interpreter, Program, State),
-    run(Interpreter, UpdatedProgram, UpdatedState).
+run( Interpreter, State = #bf_state{ status = input } ) ->
+    InputChar = io:get_chars(standard_io, "", 1),
+    NewState = got_input(State, InputChar),
+    run(Interpreter, NewState);
+run( Interpreter, State = #bf_state{ status = { output, OutputChar } } ) ->
+    io:write(standard_io, erlang:list_to_atom(OutputChar)),
+    NewState = performed_output(State),
+    run(Interpreter, NewState);
+run( Interpreter, State ) ->
+    NewState = step(Interpreter, State),
+    run(Interpreter, NewState).
+
+
+performed_output( State = #bf_state{ status = { output, _ } } ) ->
+    State#bf_state{ status = ok }.
+
+got_input( State = #bf_state{ status = input 
+                            , memory = Memory }
+         , Input ) ->
+    State#bf_state{ status = ok, memory = Memory#bf_memory{ current_cell = erlang:list_to_binary(Input) } }.
+        %InputChar = Input(), %InputChar = io:get_chars(Input, "", 1),
+    %{ advance_program(Program), State#bf_memory{ current_cell = erlang:list_to_binary(InputChar) } };
+
+
+default_state( Interpreter, TextProgram ) ->
+    #bf_state{ program = new_program(TextProgram), memory = start_memory(Interpreter) }.
 
 %% get default initial state to run a program over
 %% ie. empty memory, pointer at cell 0
 %% Interpreter - initialize memory using interpreter memory parameters
-start_state( #interpreter{ cell_size = CellSize } ) ->
-    #bf_state{ prev_mem     = []
-             , current_cell = <<0:CellSize>>
-             , next_mem     = [] 
-             }.
+start_memory( #interpreter{ cell_size = CellSize } ) ->
+    #bf_memory{ prev_mem     = []
+              , current_cell = <<0:CellSize>>
+              , next_mem     = [] 
+              }.
 
 %% convert a string program into a Program representation
 %% Program - the program to use
@@ -46,9 +67,15 @@ new_program( [First | Rest] ) ->
 %% move program to next command
 %% Program - the program to advance by one command
 advance_program( #bf_prog{ command = [Command], todo = [], executed = Executed } ) ->
-    #bf_prog{ command = fin, todo = [], executed = [Command | Executed] };
+    #bf_prog{ command = []
+            , todo = []
+            , executed = [Command | Executed] 
+            };
 advance_program(#bf_prog{ command = [Command], todo = [Next | Todo], executed = Executed } ) ->
-    #bf_prog{ command = [Next], todo = Todo, executed = [Command | Executed] }.
+    #bf_prog{ command = [Next]
+            , todo = Todo
+            , executed = [Command | Executed] 
+            }.
 
 %% when encountered an open bracket with break condition met
 %% advance program to after the corresponding close bracket
@@ -68,7 +95,10 @@ jump_forward( Count, Program ) ->
 %% move program back one command
 %% Program - the program to move back in
 undo_program( #bf_prog{ command = [Command], todo = Todo, executed = [Prev | Executed] } ) ->
-    #bf_prog{ command = [Prev], todo = [Command | Todo], executed = Executed }.
+    #bf_prog{ command = [Prev]
+            , todo = [Command | Todo]
+            , executed = Executed 
+            }.
 
 %% when encountered a closed bracket with loop condition met
 %% move program back to directly after the corresponding open bracket
@@ -88,12 +118,20 @@ jump_backward( Count, Program ) ->
 
 %% perform logic of updating program representation and program state
 %% based on the current command
-step( _, Program = #bf_prog{ command = fin }, State ) ->
-    { Program, State };
+step( _, State = #bf_state{ status = done } ) ->
+    State;
 
-step( _Interpreter = #interpreter{ cell_size = CellSize, memory = MemorySize }
-    , Program = #bf_prog{ command = ">" }
-    , _State = #bf_state{ prev_mem = PrevMem, current_cell = CellValue, next_mem = NextMem }
+step( _, State = #bf_state{ status = ok 
+                          , program = #bf_prog{ command = [] } } ) ->
+    State#bf_state{ status = done };
+
+step( _Interpreter = #interpreter{ cell_size = CellSize
+                                 , memory = MemorySize 
+                                 }
+    , State        = #bf_state{ status  = ok
+                              , program = (Program = #bf_prog{ command = ">" })
+                              , memory  = #bf_memory{ prev_mem = PrevMem, current_cell = CellValue, next_mem = NextMem }
+                              }
 ) ->
     [NewCell | UpdatedMem] = case NextMem of
         [] ->
@@ -104,61 +142,76 @@ step( _Interpreter = #interpreter{ cell_size = CellSize, memory = MemorySize }
             end;
         Other -> Other
     end,
-    { advance_program(Program), #bf_state{ prev_mem = [CellValue | PrevMem], current_cell = NewCell, next_mem = UpdatedMem } };
+    State#bf_state{ program = advance_program(Program), memory = #bf_memory{ prev_mem = [CellValue | PrevMem], current_cell = NewCell, next_mem = UpdatedMem } };
 
 step( _
-    , Program = #bf_prog{ command = "<" }
-    , _State = #bf_state{ prev_mem = PrevMem, current_cell = CellValue, next_mem = NextMem }
+    , State = #bf_state{ status  = ok
+                       , program = (Program = #bf_prog{ command = "<" })
+                       , memory  = #bf_memory{ prev_mem = PrevMem, current_cell = CellValue, next_mem = NextMem }
+                       }
 ) ->        
     [NewCell | UpdatedMem] = case PrevMem of
         [] ->
             erlang:exit(memory_exceeded);
         Other -> Other
     end,
-    { advance_program(Program), #bf_state{ prev_mem = UpdatedMem, current_cell = NewCell, next_mem = [ CellValue | NextMem ] } };
+    State#bf_state{ program = advance_program(Program), memory = #bf_memory{ prev_mem = UpdatedMem, current_cell = NewCell, next_mem = [ CellValue | NextMem ] } };
 
 step( _Interpreter = #interpreter{ cell_size = CellSize }
-    , Program = #bf_prog{ command = "+" }
-    , State = #bf_state{ current_cell = CellValue }
+    , State        = #bf_state{ status  = ok
+                              , program = (Program = #bf_prog{ command = "+" })
+                              , memory  = (Memory = #bf_memory{ current_cell = CellValue })
+                              }
 ) ->
     <<CellInt:CellSize>> = CellValue,
-    { advance_program(Program), State#bf_state{ current_cell = <<(CellInt + 1):CellSize>> } };
+    State#bf_state{ program = advance_program(Program), memory = Memory#bf_memory{ current_cell = <<(CellInt + 1):CellSize>> } };
 
 step( _Interpreter = #interpreter{ cell_size = CellSize }
-    , Program = #bf_prog{ command = "-" }
-    , State = #bf_state{ current_cell = CellValue }
+    , State        = #bf_state{ status  = ok
+                              , program = (Program = #bf_prog{ command = "-" })
+                              , memory  = (Memory = #bf_memory{ current_cell = CellValue })
+                              }
 ) ->
     <<CellInt:CellSize>> = CellValue,
-    { advance_program(Program), State#bf_state{ current_cell = <<(CellInt - 1):CellSize>> } };
+    State#bf_state{ program = advance_program(Program), memory = Memory#bf_memory{ current_cell = <<(CellInt - 1):CellSize>> } };
 
 step( _
-    , Program = #bf_prog{ command = "[" }
-    , State = #bf_state{ current_cell = <<CellInt>> }
+    , State = #bf_state{ status  = ok
+                       , program = (Program = #bf_prog{ command = "[" })
+                       , memory  = #bf_memory{ current_cell = <<CellInt>> }
+                       }
 ) ->
     case CellInt of
-        0 -> { jump_forward(Program), State };
-        _ -> { advance_program(Program), State }
+        0 -> State#bf_state{ program = jump_forward(Program) };
+        _ -> State#bf_state{ program = advance_program(Program) }
     end;
 
 step( _
-    , Program = #bf_prog{ command = "]" }
-    , State = #bf_state{ current_cell = <<CellInt>> }
+    , State = #bf_state{ status  = ok
+                       , program = (Program = #bf_prog{ command = "]" })
+                       , memory  = #bf_memory{ current_cell = <<CellInt>> }
+                       }
 ) ->
     case CellInt of
-        0 -> { advance_program(Program), State };
-        _ -> { jump_backward(Program), State }
+        0 -> State#bf_state{ program = advance_program(Program) };
+        _ -> State#bf_state{ program = jump_backward(Program) }
     end;
 
-step( _Interpreter = #interpreter{ input = Input }
-    , Program = #bf_prog{ command = "," }
-    , State
+step( _
+    , State = #bf_state{ status  = ok
+                       , program = (Program = #bf_prog{ command = "," })
+                       }
 ) ->
-    InputChar = io:get_chars(Input, "", 1),
-    { advance_program(Program), State#bf_state{ current_cell = erlang:list_to_binary(InputChar) } };
+    State#bf_state{ status = input, program = advance_program(Program) };
+    %InputChar = Input(), %InputChar = io:get_chars(Input, "", 1),
+    %{ advance_program(Program), State#bf_memory{ current_cell = erlang:list_to_binary(InputChar) } };
 
-step( _Interpreter = #interpreter{ output = Output }
-    , Program = #bf_prog{ command = "." }
-    , State = #bf_state{ current_cell = CellValue }
+step( _
+    , State = #bf_state{ status  = ok
+                       , program = (Program = #bf_prog{ command = "." })
+                       , memory  = #bf_memory{ current_cell = CellValue }
+                       } 
 ) ->
-    io:write(Output, erlang:binary_to_atom(CellValue, latin1)),
-    { advance_program(Program), State }.
+    State#bf_state{ status = { output, erlang:binary_to_list(CellValue) }, program = advance_program(Program) }.
+    %Output(erlang:binary_to_list(CellValue)),
+    %{ advance_program(Program), State }.
