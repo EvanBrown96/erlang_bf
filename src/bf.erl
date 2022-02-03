@@ -1,23 +1,24 @@
 -module(bf).
--export([interpreter/2, shell_run/2, step/2, default_state/2]).
+-export([interpreter/2, shell_run/2, step/2, default_state/2, performed_output/1, got_input/2]).
 -include("../include/bf_records.hrl").
 
 %% create an interpreter with the given parameters
 %% CellSize - integer, number of bits per cell
 %% MemorySize - integer or 'unlimited', number of cells available in memory
-%% Input - function/0 which returns a single character
-%% Output - function/1 which takes a single character
 interpreter( CellSize, MemorySize ) ->
     #interpreter{ cell_size = CellSize
                 , memory    = MemorySize
                 }.
 
-%% run given brainfuck program (as string)
-%% Interpreter - parameters to use in run (memory info, io streams)
+%% run a given brainfuck program simply, using the erlang shell
+%% Interpreter - memory parameters to use in run
 %% TextProgram - brainfuck program as a string
 shell_run( Interpreter, TextProgram ) ->
     run(Interpreter, default_state(Interpreter, TextProgram)).
 
+%% internal procedure to run brainfuck program in the erlang shell
+%% Interpreter - memory parameters to use in run
+%% State - current state of the brainfuck program & memory
 run( _, State = #bf_state{ status = done } ) ->
     State;
 run( Interpreter, State = #bf_state{ status = input } ) ->
@@ -32,10 +33,14 @@ run( Interpreter, State ) ->
     NewState = step(Interpreter, State),
     run(Interpreter, NewState).
 
-
+%% transition state after performing an output operation
+%% State - current state of the brainfuck program & memory
 performed_output( State = #bf_state{ status = { output, _ } } ) ->
     State#bf_state{ status = ok }.
 
+%% transition state after perfoming an input operation
+%% State - current state of the brainfuck program & memory
+%% Input - the character received as input
 got_input( State = #bf_state{ status = input 
                             , memory = Memory }
          , Input ) ->
@@ -43,13 +48,14 @@ got_input( State = #bf_state{ status = input
         %InputChar = Input(), %InputChar = io:get_chars(Input, "", 1),
     %{ advance_program(Program), State#bf_memory{ current_cell = erlang:list_to_binary(InputChar) } };
 
-
+%% get default initial state to run a program over
+%% Interpreter - memory parameters to initialize with
+%% TextProgram - brainfuck program as a string
 default_state( Interpreter, TextProgram ) ->
     #bf_state{ program = new_program(TextProgram), memory = start_memory(Interpreter) }.
 
-%% get default initial state to run a program over
-%% ie. empty memory, pointer at cell 0
-%% Interpreter - initialize memory using interpreter memory parameters
+%% get empty memory, pointer at cell 0
+%% Interpreter - memory parameters to initialize with
 start_memory( #interpreter{ cell_size = CellSize } ) ->
     #bf_memory{ prev_mem     = []
               , current_cell = <<0:CellSize>>
@@ -57,7 +63,7 @@ start_memory( #interpreter{ cell_size = CellSize } ) ->
               }.
 
 %% convert a string program into a Program representation
-%% Program - the program to use
+%% TextProgram - brainfuck program, as a string
 new_program( [First | Rest] ) ->
     #bf_prog{ command  = [First]
             , todo     = Rest
@@ -118,6 +124,8 @@ jump_backward( Count, Program ) ->
 
 %% perform logic of updating program representation and program state
 %% based on the current command
+%% Interpreter - memory parameters to use in run
+%% State - current brainfuck program & memory state
 step( _, State = #bf_state{ status = done } ) ->
     State;
 
