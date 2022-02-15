@@ -1,13 +1,13 @@
 -module(interpreter).
 -include("../include/bf_records.hrl").
--compile(export_all).
+-export([init/3, start/3, start_link/3, step/1, run/1, stop/1, get_state/1, input/2, reset/1]).
 
 init( CellSize, MemorySize, TextProgram ) ->
     Interpreter = #interpreter{ cell_size = CellSize, memory = MemorySize },
-    loop(Interpreter, bf:default_state(Interpreter, TextProgram), [], false ).
+    loop(Interpreter, bf:default_state(Interpreter, TextProgram), [] ).
 
 
-loop( Interpreter, State, BufferedInput, false ) ->
+loop( Interpreter, State, BufferedInput ) ->
     receive
         { FromPid, Ref, step } ->
             NewState = bf:step(Interpreter, State),
@@ -15,24 +15,24 @@ loop( Interpreter, State, BufferedInput, false ) ->
             case Status of
                 ok ->
                     FromPid ! { Ref, ok },
-                    loop(Interpreter, NewState, BufferedInput, false);
+                    loop(Interpreter, NewState, BufferedInput);
                 done ->
                     FromPid ! { Ref, done },
-                    loop(Interpreter, NewState, [], false);
+                    loop(Interpreter, NewState, []);
                 input ->
                     case BufferedInput of
                         [] ->
                             FromPid ! { Ref, input },
-                            loop(Interpreter, NewState, [], false);
+                            loop(Interpreter, NewState, []);
                         [FirstChar | Rest ] ->
                             FromPid ! { Ref, ok },
                             NewState2 = bf:got_input(NewState, [FirstChar]),
-                            loop(Interpreter, NewState2, Rest, false)
+                            loop(Interpreter, NewState2, Rest)
                     end;
                 { output, OutputChar } ->
                     FromPid ! { Ref, output, OutputChar },
                     NewState2 = bf:performed_output(NewState),
-                    loop(Interpreter, NewState2, BufferedInput, false)
+                    loop(Interpreter, NewState2, BufferedInput)
             end;
         { FromPid, Ref, run } ->
             { NewState2, BufferedOutput } = run_until_input_or_done(Interpreter, State, BufferedInput, []),
@@ -41,42 +41,26 @@ loop( Interpreter, State, BufferedInput, false ) ->
             case NewState of
                 done ->
                     FromPid ! { Ref, done },
-                    loop(Interpreter, NewState2, [], false);
+                    loop(Interpreter, NewState2, []);
                 input ->
                     FromPid ! { Ref, input },
-                    loop(Interpreter, NewState2, [], false)
+                    loop(Interpreter, NewState2, [])
                 end;
         { FromPid, Ref, stop } ->
             FromPid ! { Ref, stopped };
+        { FromPid, Ref, reset } ->
+            FromPid ! { Ref, reset },
+            loop(Interpreter, bf:reset_state(State), []);
         { FromPid, Ref, get_state } ->
             FromPid ! { Ref, state, State },
-            loop(Interpreter, State, BufferedInput, false);
+            loop(Interpreter, State, BufferedInput);
         { FromPid, Ref, input, [ FirstChar | Rest ] } -> 
             FromPid ! { Ref, ok },
             NewState = bf:got_input(State, [FirstChar]),
-            loop(Interpreter, NewState, Rest, false);
+            loop(Interpreter, NewState, Rest);
         Unknown ->
             io:format("Unknown message passed: ~p~n", Unknown)
     end.
-% loop( Interpreter, State, [], true ) ->
-%     receive
-%         { FromPid, Ref, input, [ FirstChar | Rest ] } ->
-%             FromPid ! { Ref, ok },
-%             NewState = bf:got_input(State, [FirstChar]),
-%             { NewState2, BufferedOutput } = run_until_input_or_done(Interpreter, NewState, Rest, []),
-%             FromPid ! { Ref, output, BufferedOutput },
-%             NewStatus = NewState2#bf_state.status,
-%             case NewStatus of
-%             	done ->
-%             	    FromPid ! { Ref, done },
-%                     loop(Interpreter, NewState2, [], false);
-%                 input ->
-%                     FromPid ! { Ref, input },
-%             	    loop(Interpreter, NewState2, [], true)
-%             end;
-%         Unknown ->
-%             io:format("Unknown message passed: ~p~n", Unknown)
-%     end.
 
 run_until_input_or_done( Interpreter, State, BufferedInput, BufferedOutput) ->
     Status = State#bf_state.status,
@@ -155,5 +139,13 @@ input( Pid, InputString ) ->
     Pid ! { self(), Ref, input, InputString },
     receive
         { Ref, ok } ->
+            ok
+    end.
+
+reset( Pid ) ->
+    Ref = make_ref(),
+    Pid ! { self(), Ref, reset },
+    receive
+        { Ref, reset } ->
             ok
     end.

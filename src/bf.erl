@@ -1,5 +1,5 @@
 -module(bf).
--export([interpreter/2, shell_run/2, step/2, default_state/2, performed_output/1, got_input/2]).
+-export([interpreter/2, shell_run/2, step/2, default_state/2, performed_output/1, got_input/2, reset_state/2]).
 -include("../include/bf_records.hrl").
 
 %% create an interpreter with the given parameters
@@ -97,6 +97,11 @@ jump_forward( Count, Program = #bf_prog{ command = "[" } ) ->
     jump_forward( Count+1, advance_program(Program) );
 jump_forward( Count, Program ) ->
     jump_forward( Count, advance_program(Program) ).
+
+%% reset state of the interpreter
+%% State - interpreter state to reset
+reset_state( Interpreter, #bf_state{ program = #bf_prog{ command = Command, todo = Todo, executed = Executed } } ) ->
+    default_state(Interpreter, lists:reverse(Executed) ++ Command ++ Todo).
 
 %% move program back one command
 %% Program - the program to move back in
@@ -220,6 +225,11 @@ step( _
                        , memory  = #bf_memory{ current_cell = CellValue }
                        } 
 ) ->
-    State#bf_state{ status = { output, erlang:binary_to_list(CellValue) }, program = advance_program(Program) }.
-    %Output(erlang:binary_to_list(CellValue)),
-    %{ advance_program(Program), State }.
+    State#bf_state{ status = { output, erlang:binary_to_list(CellValue) }, program = advance_program(Program) };
+
+step( _
+    , State = #bf_state{ status = ok
+                       , program = Program
+                       }
+) ->
+    State#bf_state{ program = advance_program(Program) }.
