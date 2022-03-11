@@ -50,7 +50,7 @@ loop( Interpreter, State, BufferedInput ) ->
             FromPid ! { Ref, stopped };
         { FromPid, Ref, reset } ->
             FromPid ! { Ref, reset },
-            loop(Interpreter, bf:reset_state(State), []);
+            loop(Interpreter, bf:reset_state(Interpreter, State), []);
         { FromPid, Ref, get_state } ->
             FromPid ! { Ref, state, State },
             loop(Interpreter, State, BufferedInput);
@@ -100,7 +100,7 @@ step( Pid ) ->
     Pid ! { self(), Ref, step },
     receive
         { Ref, Status } ->
-            Status;
+            { Status };
         { Ref, output, Output } ->
             { output, Output }
     end.
