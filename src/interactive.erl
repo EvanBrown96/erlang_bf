@@ -35,48 +35,44 @@ load_new_interpreter(InputTokens) ->
 
 parse_memory_args(InputTokens) ->
     try
-        [FormatToken | BoundsTokens] = InputTokens,
-        Bounds = lists:map(
-            fun (BoundsToken) ->
-                case string:prefix(BoundsToken, "~~") of
-                    nomatch -> {absolute, erlang:list_to_integer(BoundsToken)};
-                    Other ->   {relative, erlang:list_to_integer(Other)}
-                end
-            end,
-            BoundsTokens),
-        {Lower, Upper} = case Bounds of
-            [U] -> {{absolute, 1}, U};
-            [L, U] -> {L, U}
+        [FormatToken, StartToken, LengthToken] = InputTokens,
+        Start = case string:prefix(StartToken, "~") of
+            nomatch -> {absolute, erlang:list_to_integer(StartToken)};
+            Other   -> {relative, erlang:list_to_integer(Other)}
         end,
+        Length = erlang:list_to_integer(LengthToken),
         Format = case FormatToken of
             "d" -> decimal;
             "b" -> binary;
             "x" -> hex
         end,
-        {ok, Format, Lower, Upper}
+        {ok, Format, Start, Length}
     catch
         error:_ ->
-            {error, "Expected \"m [format] {start} [end]\""}
+            {error, "Expected \"m [format] [start] [length]\""}
     end.
 
 format_memory(InterpreterPid, InputTokens) ->
     case parse_memory_args(InputTokens) of
-        {ok, Format, Lower, Upper} ->
+        {ok, Format, Start, Length} ->
             State = interpreter:get_state(InterpreterPid),
             Memory = State#bf_state.memory,
             Position = length(Memory#bf_memory.prev_mem) + 1,
-            Start = case Lower of
+            StartPos = case Start of
                 {absolute, L} -> L;
                 {relative, L} -> max(Position + L, 1)
             end,
-            End = case Upper of
-                {absolute, U} -> U;
-                {relative, U} -> max(Position + U, 1)
+            ConcatMem = Memory#bf_memory.prev_mem ++ [Memory#bf_memory.current_cell | Memory#bf_memory.next_mem],
+            MemoryArr = case StartPos > length(ConcatMem) of
+                true -> [];
+                false -> lists:sublist(ConcatMem, StartPos, Length)
             end,
-            Length = End - Start + 1,
-            MemoryArr = lists:sublist(Memory#bf_memory.prev_mem ++ [Memory#bf_memory.current_cell | Memory#bf_memory.next_mem], Start, Length),
             PaddedMem = MemoryArr ++ [<<0>> || _ <- lists:seq(1, Length - length(MemoryArr))],
-            {ok, string:join(lists:map(fun (M) -> lists:flatten(string:pad(erlang:integer_to_list(binary:decode_unsigned(M)), 3, leading)) end, PaddedMem), " ")};
+            StringedMem = lists:map(fun (M) -> lists:flatten(string:pad(erlang:integer_to_list(binary:decode_unsigned(M)), 3, leading)) end, PaddedMem),
+            LinedMem = [ lists:sublist(StringedMem, Line, 16) || Line <- lists:seq(1, length(StringedMem), 16)],
+            CellNumbers = [ lists:map(fun (M) -> lists:flatten(string:pad(case M of Position -> "*"; _ -> erlang:integer_to_list(M) end, 3, leading)) end, lists:seq(StartPos + Index * 16 - 16, StartPos + Index * 16 - 17 + length(Line))) || {Index, Line} <- lists:zip(lists:seq(1, length(LinedMem)), LinedMem) ],
+            PrintLines = lists:zipwith(fun (Numbers, Values) -> string:join(Numbers, " ") ++ "\n" ++ string:join(Values, " ") end, CellNumbers, LinedMem),
+            {ok, string:join(PrintLines, "\n\n")};
         Other -> Other
     end.
 
